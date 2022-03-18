@@ -166,6 +166,7 @@ class BatchFeature(UserDict):
         for key, value in self.items():
             try:
                 if not is_tensor(value):
+                    print("we are inside with", value)
                     tensor = as_tensor(value)
 
                     self[key] = tensor
