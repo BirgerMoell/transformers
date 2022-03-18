@@ -164,6 +164,7 @@ class BatchFeature(UserDict):
 
         # Do the tensor conversion in batch
         for key, value in self.items():
+            print("we are inside with", value)
             try:
                 if not is_tensor(value):
                     print("we are inside with", value)
