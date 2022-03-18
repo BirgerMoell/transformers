@@ -165,6 +165,9 @@ class BatchFeature(UserDict):
         # Do the tensor conversion in batch
         for key, value in self.items():
             print("we are inside with", value)
+            print("the key is", key)
+            import pdb
+            pdb.set_trace()
             try:
                 if not is_tensor(value):
                     print("we are inside with", value)
