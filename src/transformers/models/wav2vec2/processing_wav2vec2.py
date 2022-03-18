@@ -79,6 +79,7 @@ class Wav2Vec2Processor(ProcessorMixin):
         [`~Wav2Vec2Processor.as_target_processor`] this method forwards all its arguments to PreTrainedTokenizer's
         [`~PreTrainedTokenizer.pad`]. Please refer to the docstring of the above two methods for more information.
         """
+        print("I'm printing ", args)
         return self.current_processor.pad(*args, **kwargs)
 
     def batch_decode(self, *args, **kwargs):
