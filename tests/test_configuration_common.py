@@ -23,11 +23,11 @@ import unittest
 import unittest.mock as mock
 from pathlib import Path
 
-from huggingface_hub import Repository, delete_repo, login
+from huggingface_hub import HfFolder, Repository, delete_repo, set_access_token
 from requests.exceptions import HTTPError
 from transformers import AutoConfig, BertConfig, GPT2Config, is_torch_available
 from transformers.configuration_utils import PretrainedConfig
-from transformers.testing_utils import PASS, USER, is_staging_test
+from transformers.testing_utils import TOKEN, USER, is_staging_test
 
 
 sys.path.append(str(Path(__file__).parent.parent / "utils"))
@@ -205,22 +205,24 @@ class ConfigTester(object):
 class ConfigPushToHubTester(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls._token = login(username=USER, password=PASS)
+        cls._token = TOKEN
+        set_access_token(TOKEN)
+        HfFolder.save_token(TOKEN)
 
     @classmethod
     def tearDownClass(cls):
         try:
-            delete_repo(token=cls._token, name="test-config")
+            delete_repo(token=cls._token, repo_id="test-config")
         except HTTPError:
             pass
 
         try:
-            delete_repo(token=cls._token, name="test-config-org", organization="valid_org")
+            delete_repo(token=cls._token, repo_id="valid_org/test-config-org")
         except HTTPError:
             pass
 
         try:
-            delete_repo(token=cls._token, name="test-dynamic-config")
+            delete_repo(token=cls._token, repo_id="test-dynamic-config")
         except HTTPError:
             pass
 
@@ -300,8 +302,9 @@ class ConfigTestUtils(unittest.TestCase):
         keys_with_defaults = [key for key, value in config_common_kwargs.items() if value == getattr(base_config, key)]
         if len(keys_with_defaults) > 0:
             raise ValueError(
-                "The following keys are set with the default values in `test_configuration_common.config_common_kwargs` "
-                f"pick another value for them: {', '.join(keys_with_defaults)}."
+                "The following keys are set with the default values in"
+                " `test_configuration_common.config_common_kwargs` pick another value for them:"
+                f" {', '.join(keys_with_defaults)}."
             )
 
     def test_cached_files_are_used_when_internet_is_down(self):
@@ -356,7 +359,7 @@ class ConfigurationVersioningTest(unittest.TestCase):
         )
         self.assertEqual(new_configuration.hidden_size, 2)
         # This checks `_configuration_file` ia not kept in the kwargs by mistake.
-        self.assertDictEqual(kwargs, {"_from_auto": True})
+        self.assertDictEqual(kwargs, {})
 
         # Testing an older version by monkey-patching the version in the module it's used.
         import transformers as old_transformers

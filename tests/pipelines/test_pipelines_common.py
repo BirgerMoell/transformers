@@ -22,10 +22,13 @@ from abc import abstractmethod
 from functools import lru_cache
 from unittest import skipIf
 
+import numpy as np
+
 from transformers import (
     FEATURE_EXTRACTOR_MAPPING,
     TOKENIZER_MAPPING,
     AutoFeatureExtractor,
+    AutoModelForSequenceClassification,
     AutoTokenizer,
     DistilBertForSequenceClassification,
     IBertConfig,
@@ -33,9 +36,19 @@ from transformers import (
     TextClassificationPipeline,
     pipeline,
 )
-from transformers.pipelines import get_task
-from transformers.pipelines.base import _pad
-from transformers.testing_utils import is_pipeline_test, nested_simplify, require_tf, require_torch
+from transformers.pipelines import PIPELINE_REGISTRY, get_task
+from transformers.pipelines.base import Pipeline, _pad
+from transformers.testing_utils import (
+    CaptureLogger,
+    is_pipeline_test,
+    nested_simplify,
+    require_scatter,
+    require_tensorflow_probability,
+    require_tf,
+    require_torch,
+    slow,
+)
+from transformers.utils import logging as transformers_logging
 
 
 logger = logging.getLogger(__name__)
@@ -65,7 +78,7 @@ def get_tiny_config_from_class(configuration_class):
 
     try:
         model_slug = model_type.replace("-", "_")
-        module = importlib.import_module(f".test_modeling_{model_slug}", package=f"tests.{model_slug}")
+        module = importlib.import_module(f".test_modeling_{model_slug}", package=f"tests.models.{model_slug}")
         model_tester_class = getattr(module, f"{camel_case_model_name}ModelTester", None)
     except (ImportError, AttributeError):
         logger.error(f"No model tester class for {configuration_class.__name__}")
@@ -184,7 +197,8 @@ class PipelineTestCaseMeta(type):
 
                 if tokenizer is None and feature_extractor is None:
                     self.skipTest(
-                        f"Ignoring {ModelClass}, cannot create a tokenizer or feature_extractor (PerceiverConfig with no FastTokenizer ?)"
+                        f"Ignoring {ModelClass}, cannot create a tokenizer or feature_extractor (PerceiverConfig with"
+                        " no FastTokenizer ?)"
                     )
                 pipeline, examples = self.get_test_pipeline(model, tokenizer, feature_extractor)
                 if pipeline is None:
@@ -460,8 +474,8 @@ class PipelinePadTest(unittest.TestCase):
 
 
 @is_pipeline_test
-@require_torch
 class PipelineUtilsTest(unittest.TestCase):
+    @require_torch
     def test_pipeline_dataset(self):
         from transformers.pipelines.pt_utils import PipelineDataset
 
@@ -475,6 +489,7 @@ class PipelineUtilsTest(unittest.TestCase):
         outputs = [dataset[i] for i in range(4)]
         self.assertEqual(outputs, [2, 3, 4, 5])
 
+    @require_torch
     def test_pipeline_iterator(self):
         from transformers.pipelines.pt_utils import PipelineIterator
 
@@ -489,6 +504,7 @@ class PipelineUtilsTest(unittest.TestCase):
         outputs = [item for item in dataset]
         self.assertEqual(outputs, [2, 3, 4, 5])
 
+    @require_torch
     def test_pipeline_iterator_no_len(self):
         from transformers.pipelines.pt_utils import PipelineIterator
 
@@ -506,6 +522,7 @@ class PipelineUtilsTest(unittest.TestCase):
         outputs = [item for item in dataset]
         self.assertEqual(outputs, [2, 3, 4, 5])
 
+    @require_torch
     def test_pipeline_batch_unbatch_iterator(self):
         from transformers.pipelines.pt_utils import PipelineIterator
 
@@ -519,6 +536,7 @@ class PipelineUtilsTest(unittest.TestCase):
         outputs = [item for item in dataset]
         self.assertEqual(outputs, [{"id": 2}, {"id": 3}, {"id": 4}, {"id": 5}])
 
+    @require_torch
     def test_pipeline_batch_unbatch_iterator_tensors(self):
         import torch
 
@@ -536,6 +554,7 @@ class PipelineUtilsTest(unittest.TestCase):
             nested_simplify(outputs), [{"id": [[12, 22]]}, {"id": [[2, 3]]}, {"id": [[2, 4]]}, {"id": [[5]]}]
         )
 
+    @require_torch
     def test_pipeline_chunk_iterator(self):
         from transformers.pipelines.pt_utils import PipelineChunkIterator
 
@@ -551,6 +570,7 @@ class PipelineUtilsTest(unittest.TestCase):
 
         self.assertEqual(outputs, [0, 1, 0, 1, 2])
 
+    @require_torch
     def test_pipeline_pack_iterator(self):
         from transformers.pipelines.pt_utils import PipelinePackIterator
 
@@ -583,6 +603,7 @@ class PipelineUtilsTest(unittest.TestCase):
             ],
         )
 
+    @require_torch
     def test_pipeline_pack_unbatch_iterator(self):
         from transformers.pipelines.pt_utils import PipelinePackIterator
 
@@ -606,3 +627,173 @@ class PipelineUtilsTest(unittest.TestCase):
 
         outputs = [item for item in dataset]
         self.assertEqual(outputs, [[{"id": 2}, {"id": 3}, {"id": 4}, {"id": 5}]])
+
+    @slow
+    @require_torch
+    def test_load_default_pipelines_pt(self):
+        import torch
+
+        from transformers.pipelines import SUPPORTED_TASKS
+
+        set_seed_fn = lambda: torch.manual_seed(0)  # noqa: E731
+        for task in SUPPORTED_TASKS.keys():
+            if task == "table-question-answering":
+                # test table in seperate test due to more dependencies
+                continue
+
+            self.check_default_pipeline(task, "pt", set_seed_fn, self.check_models_equal_pt)
+
+    @slow
+    @require_tf
+    def test_load_default_pipelines_tf(self):
+        import tensorflow as tf
+
+        from transformers.pipelines import SUPPORTED_TASKS
+
+        set_seed_fn = lambda: tf.random.set_seed(0)  # noqa: E731
+        for task in SUPPORTED_TASKS.keys():
+            if task == "table-question-answering":
+                # test table in seperate test due to more dependencies
+                continue
+
+            self.check_default_pipeline(task, "tf", set_seed_fn, self.check_models_equal_tf)
+
+    @slow
+    @require_torch
+    @require_scatter
+    def test_load_default_pipelines_pt_table_qa(self):
+        import torch
+
+        set_seed_fn = lambda: torch.manual_seed(0)  # noqa: E731
+        self.check_default_pipeline("table-question-answering", "pt", set_seed_fn, self.check_models_equal_pt)
+
+    @slow
+    @require_tf
+    @require_tensorflow_probability
+    def test_load_default_pipelines_tf_table_qa(self):
+        import tensorflow as tf
+
+        set_seed_fn = lambda: tf.random.set_seed(0)  # noqa: E731
+        self.check_default_pipeline("table-question-answering", "tf", set_seed_fn, self.check_models_equal_tf)
+
+    def check_default_pipeline(self, task, framework, set_seed_fn, check_models_equal_fn):
+        from transformers.pipelines import SUPPORTED_TASKS, pipeline
+
+        task_dict = SUPPORTED_TASKS[task]
+        # test to compare pipeline to manually loading the respective model
+        model = None
+        relevant_auto_classes = task_dict[framework]
+
+        if len(relevant_auto_classes) == 0:
+            # task has no default
+            logger.debug(f"{task} in {framework} has no default")
+            return
+
+        # by default use first class
+        auto_model_cls = relevant_auto_classes[0]
+
+        # retrieve correct model ids
+        if task == "translation":
+            # special case for translation pipeline which has multiple languages
+            model_ids = []
+            revisions = []
+            tasks = []
+            for translation_pair in task_dict["default"].keys():
+                model_id, revision = task_dict["default"][translation_pair]["model"][framework]
+
+                model_ids.append(model_id)
+                revisions.append(revision)
+                tasks.append(task + f"_{'_to_'.join(translation_pair)}")
+        else:
+            # normal case - non-translation pipeline
+            model_id, revision = task_dict["default"]["model"][framework]
+
+            model_ids = [model_id]
+            revisions = [revision]
+            tasks = [task]
+
+        # check for equality
+        for model_id, revision, task in zip(model_ids, revisions, tasks):
+            # load default model
+            try:
+                set_seed_fn()
+                model = auto_model_cls.from_pretrained(model_id, revision=revision)
+            except ValueError:
+                # first auto class is possible not compatible with model, go to next model class
+                auto_model_cls = relevant_auto_classes[1]
+                set_seed_fn()
+                model = auto_model_cls.from_pretrained(model_id, revision=revision)
+
+            # load default pipeline
+            set_seed_fn()
+            default_pipeline = pipeline(task, framework=framework)
+
+            # compare pipeline model with default model
+            models_are_equal = check_models_equal_fn(default_pipeline.model, model)
+            self.assertTrue(models_are_equal, f"{task} model doesn't match pipeline.")
+
+            logger.debug(f"{task} in {framework} succeeded with {model_id}.")
+
+    def check_models_equal_pt(self, model1, model2):
+        models_are_equal = True
+        for model1_p, model2_p in zip(model1.parameters(), model2.parameters()):
+            if model1_p.data.ne(model2_p.data).sum() > 0:
+                models_are_equal = False
+
+        return models_are_equal
+
+    def check_models_equal_tf(self, model1, model2):
+        models_are_equal = True
+        for model1_p, model2_p in zip(model1.weights, model2.weights):
+            if np.abs(model1_p.numpy() - model2_p.numpy()).sum() > 1e-5:
+                models_are_equal = False
+
+        return models_are_equal
+
+
+class CustomPipeline(Pipeline):
+    def _sanitize_parameters(self, **kwargs):
+        preprocess_kwargs = {}
+        if "maybe_arg" in kwargs:
+            preprocess_kwargs["maybe_arg"] = kwargs["maybe_arg"]
+        return preprocess_kwargs, {}, {}
+
+    def preprocess(self, text, maybe_arg=2):
+        input_ids = self.tokenizer(text, return_tensors="pt")
+        return input_ids
+
+    def _forward(self, model_inputs):
+        outputs = self.model(**model_inputs)
+        return outputs
+
+    def postprocess(self, model_outputs):
+        return model_outputs["logits"].softmax(-1).numpy()
+
+
+@is_pipeline_test
+class PipelineRegistryTest(unittest.TestCase):
+    def test_warning_logs(self):
+        transformers_logging.set_verbosity_debug()
+        logger_ = transformers_logging.get_logger("transformers.pipelines.base")
+
+        alias = "text-classification"
+        with CaptureLogger(logger_) as cm:
+            PIPELINE_REGISTRY.register_pipeline(alias, {})
+        self.assertIn(f"{alias} is already registered", cm.out)
+
+    @require_torch
+    def test_register_pipeline(self):
+        custom_text_classification = {
+            "impl": CustomPipeline,
+            "tf": (),
+            "pt": (AutoModelForSequenceClassification,),
+            "default": {"model": {"pt": "hf-internal-testing/tiny-random-distilbert"}},
+            "type": "text",
+        }
+        PIPELINE_REGISTRY.register_pipeline("custom-text-classification", custom_text_classification)
+        assert "custom-text-classification" in PIPELINE_REGISTRY.get_supported_tasks()
+
+        task_def, _ = PIPELINE_REGISTRY.check_task("custom-text-classification")
+        self.assertEqual(task_def, custom_text_classification)
+        self.assertEqual(task_def["type"], "text")
+        self.assertEqual(task_def["impl"], CustomPipeline)
